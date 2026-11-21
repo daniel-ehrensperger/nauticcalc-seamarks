@@ -1,0 +1,98 @@
+# Baut die Seezeichen-Zellen wöchentlich und veröffentlicht sie auf GitHub Pages.
+#
+# Vorlage aus NauticCalc (scripts/seamark_public_repo/). Das Repo, in dem dieser
+# Workflow läuft, muss öffentlich sein: Die ODbL verlangt, dass der Auszug frei
+# und kostenlos abrufbar ist, und die App lädt die Zellen von genau hier.
+#
+# Einrichten: Settings → Pages → Source „GitHub Actions". Mehr braucht es nicht,
+# insbesondere kein Secret.
+#
+# ⚠️ Vor dem Bau wird der veröffentlichte index.json geholt. Das Skript
+# vergleicht damit und bricht ab, wenn eine Zelle mit mindestens 20 Objekten auf
+# weniger als die Hälfte schrumpft — dann bleibt der alte Stand online. Ohne
+# diesen Schritt fehlte der Vergleich, und ein halber Overpass-Lauf ginge live.
+name: Seezeichen-Zellen bauen
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # montags 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Schrumpf-Prüfung übersteuern (--force)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # macOS, weil das Skript die async-APIs von URLSession nutzt, die
+    # swift-corelibs-foundation auf Linux nicht in jeder Version hat. Für
+    # öffentliche Repos kosten die Minuten nichts.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Veröffentlichten Index für die Schrumpf-Prüfung holen
+        run: |
+          mkdir -p site
+          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/index.json"
+          if curl -fsS "$url" -o site/index.json; then
+            echo "Voriger Index: $(wc -c < site/index.json) Bytes"
+          else
+            echo "Kein voriger Index (erster Lauf)"
+            rm -f site/index.json
+          fi
+
+      - name: Zellen bauen
+        env:
+          SEAMARK_USER_AGENT: "nauticcalc-seamarks/1.0 (+https://github.com/${{ github.repository }})"
+        run: |
+          args=(--areas seamark_areas.json --out site)
+          if [ "${{ inputs.force }}" = "true" ]; then args+=(--force); fi
+          swift build_seamark_extract.swift "${args[@]}"
+
+      - name: Jede Zelle im Index hat eine Datei
+        # Der Index übernimmt Einträge aus dem vorigen Lauf. Fällt ein
+        # Baugebiet weg, stünden seine Zellen noch im Index, ihre Dateien
+        # aber nicht mehr im Artefakt — die App meldete sie für immer als
+        # „nicht geladen". Dann lieber hier abbrechen.
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          cells = json.load(open("site/index.json"))["cells"]
+          missing = [c["cell"] for c in cells if not os.path.exists(f"site/cells/{c['cell']}.json")]
+          if missing:
+              print("Index nennt Zellen ohne Datei:", ", ".join(missing))
+              sys.exit(1)
+          print(f"{len(cells)} Zellen, alle mit Datei")
+          PY
+
+      - name: Lizenz und Hinweise beilegen
+        run: |
+          cp README.md site/README.md
+          ls -la site site/cells | head -50
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,4 @@
+[
+  {"id": "westliche-ostsee", "name": "Westliche Ostsee", "south": 53, "west": 9, "north": 56, "east": 13},
+  {"id": "schweiz-bodensee", "name": "Schweizer Seen und Bodensee", "south": 45, "west": 5, "north": 48, "east": 11}
+]
